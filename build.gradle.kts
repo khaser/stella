@@ -11,6 +11,7 @@ repositories {
 dependencies {
     antlr("org.antlr:antlr4:4.13.1")
     implementation("org.antlr:antlr4-runtime:4.13.1")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
 }
 
 application {
@@ -29,7 +30,7 @@ tasks.compileJava {
 sourceSets {
     main {
         java {
-            srcDirs("src/main/java", "build/generated-src/antlr/main")
+            srcDirs("src/main/java", "test/main/java", "build/generated-src/antlr/main")
         }
     }
 }
