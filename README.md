@@ -2,9 +2,16 @@
 
 ## Build & run
 
+Build:
 ```
-./gradlew
+./gradlew build
 ```
+
+Parse a file:
+```bash
+./gradlew run --args="program.stella"
+```
+
 
 ## Implemented extensions
 

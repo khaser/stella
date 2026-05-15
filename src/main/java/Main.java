@@ -1,6 +1,42 @@
+import org.antlr.v4.runtime.*;
+import org.antlr.v4.runtime.tree.*;
+
+import java.io.FileInputStream;
+import java.io.InputStream;
 
 final class Main {
-    public static void main(String args[]) {
-        System.out.println("hello stella");
+    public static void main(String[] args) {
+        try {
+            InputStream input;
+
+            if (args.length > 0) {
+                input = new FileInputStream(args[0]);
+                System.out.println("Parsing file: " + args[0]);
+            } else {
+                input = System.in;
+                System.out.println("Reading from stdin (Ctrl+D to end input):");
+            }
+
+            CharStream charStream = CharStreams.fromStream(input);
+            stellaLexer lexer = new stellaLexer(charStream);
+            CommonTokenStream tokens = new CommonTokenStream(lexer);
+            stellaParser parser = new stellaParser(tokens);
+            ParseTree tree = parser.start_Program();
+
+            System.out.println("\n=== Parse Tree ===");
+            System.out.println(tree.toStringTree(parser));
+
+            if (parser.getNumberOfSyntaxErrors() > 0) {
+                System.err.println("\nParsing completed with " + parser.getNumberOfSyntaxErrors() + " error(s)");
+                System.exit(1);
+            } else {
+                System.out.println("\n=== Parsing successful! ===");
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
     }
 }

@@ -95,7 +95,7 @@ MULTICOMMENT_antlr_builtin
 '/*' (.)*? '*/'
 ) -> skip;
 
-StellaIdent : ('_'|LETTER) ([!\-:?_]|(DIGIT|LETTER))*;
+StellaIdent : ('_'|LETTER) ([!\-?_]|(DIGIT|LETTER))*;
 ExtensionName : '#' ([\-_]|(DIGIT|LETTER))+;
 MemoryAddress: '<0x' (DIGIT|[A-F]|[a-f])+ '>';
 
