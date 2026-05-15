@@ -28,4 +28,16 @@ Parse a file:
 * TODO: `#fixpoint-combinator`
 
 ## Testing
-TODO: clone testsuite
+Test suite has been borrowed from [qexik0/stella-typechecker repo](https://github.com/qexik0/stella-typechecker/tree/main).
+All tests can be runned with:
+
+```
+./gradlew test
+```
+
+Specific test group can be runned with:
+```
+./gradlew test --tests "<CoreTest|PairsRecordsTest|...>"
+```
+
+Supported test groups can be found in `src/main/test/java`.
