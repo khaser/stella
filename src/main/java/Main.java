@@ -31,6 +31,15 @@ final class Main {
                 System.exit(1);
             } else {
                 System.out.println("\n=== Parsing successful! ===");
+                System.out.println("\n=== Typechecking ===");
+                try {
+                    TypeChecker checker = new TypeChecker();
+                    checker.visit(tree);
+                    System.out.println("Typechecking successful!");
+                } catch (Exception e) {
+                    System.err.println("Type error: " + e.getMessage());
+                    System.exit(1);
+                }
             }
 
         } catch (Exception e) {
