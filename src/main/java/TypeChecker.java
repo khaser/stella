@@ -31,6 +31,9 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     }
 
     @Override
+    public Type visitTypeUnit(stellaParser.TypeUnitContext ctx) { return new UnitType(); }
+
+    @Override
     public Type visitTypeVar(stellaParser.TypeVarContext ctx) {
         String name = ctx.name.getText();
         if (!typeAliases.containsKey(name)) {
@@ -179,6 +182,9 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitConstInt(stellaParser.ConstIntContext ctx) { return new NatType(); }
+
+    @Override
+    public Type visitConstUnit(stellaParser.ConstUnitContext ctx) { return new UnitType(); }
 
     @Override
     public Type visitSucc(stellaParser.SuccContext ctx) {
@@ -370,5 +376,21 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitTerminatingSemicolon(stellaParser.TerminatingSemicolonContext ctx) {
         return visit(ctx.expr_);
+    }
+
+    @Override
+    public Type visitSequence(stellaParser.SequenceContext ctx) {
+        infer(ctx.expr1);
+        return visit(ctx.expr2);
+    }
+
+    @Override
+    public Type visitTypeAsc(stellaParser.TypeAscContext ctx) {
+        Type ascType = visit(ctx.type_);
+        Type exprType = check(ctx.expr_, ascType);
+        if (!isSubtype(exprType, ascType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: ascription type mismatch: expected " + ascType + " got " + exprType);
+        }
+        return ascType;
     }
 }
