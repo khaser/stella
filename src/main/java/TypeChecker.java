@@ -34,6 +34,12 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     public Type visitTypeUnit(stellaParser.TypeUnitContext ctx) { return new UnitType(); }
 
     @Override
+    public Type visitTypeTop(stellaParser.TypeTopContext ctx) { return new TopType(); }
+
+    @Override
+    public Type visitTypeBottom(stellaParser.TypeBottomContext ctx) { return new BotType(); }
+
+    @Override
     public Type visitTypeVar(stellaParser.TypeVarContext ctx) {
         String name = ctx.name.getText();
         if (!typeAliases.containsKey(name)) {
@@ -121,6 +127,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     private boolean isSubtype(Type sub, Type sup) {
         if (sub == null || sup == null) return true;
+        if (sub instanceof BotType) return true;
+        if (sup instanceof TopType) return true;
         if (sub.equals(sup)) return true;
         if (sub instanceof FunctionType f1 && sup instanceof FunctionType f2) {
             if (f1.params.size() != f2.params.size()) return false;
@@ -376,6 +384,11 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitTerminatingSemicolon(stellaParser.TerminatingSemicolonContext ctx) {
         return visit(ctx.expr_);
+    }
+
+    @Override
+    public Type visitPanic(stellaParser.PanicContext ctx) {
+        return expectedType;
     }
 
     @Override
