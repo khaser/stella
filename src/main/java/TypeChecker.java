@@ -34,6 +34,28 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     public Type visitTypeUnit(stellaParser.TypeUnitContext ctx) { return new UnitType(); }
 
     @Override
+    public Type visitTypeTuple(stellaParser.TypeTupleContext ctx) {
+        List<Type> elems = new ArrayList<>();
+        for (stellaParser.StellatypeContext t : ctx.types) {
+            elems.add(visit(t));
+        }
+        return new TupleType(elems);
+    }
+
+    @Override
+    public Type visitTypeRecord(stellaParser.TypeRecordContext ctx) {
+        LinkedHashMap<String, Type> fields = new LinkedHashMap<>();
+        for (stellaParser.RecordFieldTypeContext ft : ctx.fieldTypes) {
+            String label = ft.label.getText();
+            if (fields.containsKey(label)) {
+                throw new RuntimeException("ERROR_DUPLICATE_RECORD_TYPE_FIELDS: " + label);
+            }
+            fields.put(label, visit(ft.type_));
+        }
+        return new RecordType(fields);
+    }
+
+    @Override
     public Type visitTypeTop(stellaParser.TypeTopContext ctx) { return new TopType(); }
 
     @Override
@@ -130,6 +152,21 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         if (sub instanceof BotType) return true;
         if (sup instanceof TopType) return true;
         if (sub.equals(sup)) return true;
+        if (sub instanceof RecordType r1 && sup instanceof RecordType r2) {
+            if (!extensions.contains("#structural-subtyping") && !r1.fields.keySet().equals(r2.fields.keySet())) return false;
+            for (Map.Entry<String, Type> e : r2.fields.entrySet()) {
+                if (!r1.fields.containsKey(e.getKey())) return false;
+                if (!isSubtype(r1.fields.get(e.getKey()), e.getValue())) return false;
+            }
+            return true;
+        }
+        if (sub instanceof TupleType t1 && sup instanceof TupleType t2) {
+            if (t1.elements.size() != t2.elements.size()) return false;
+            for (int i = 0; i < t1.elements.size(); i++) {
+                if (!isSubtype(t1.elements.get(i), t2.elements.get(i))) return false;
+            }
+            return true;
+        }
         if (sub instanceof FunctionType f1 && sup instanceof FunctionType f2) {
             if (f1.params.size() != f2.params.size()) return false;
             for (int i = 0; i < f1.params.size(); i++) {
@@ -384,6 +421,115 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitTerminatingSemicolon(stellaParser.TerminatingSemicolonContext ctx) {
         return visit(ctx.expr_);
+    }
+
+    @Override
+    public Type visitTuple(stellaParser.TupleContext ctx) {
+        List<Type> elemTypes = new ArrayList<>();
+        List<Type> expectedElems = null;
+        if (expectedType instanceof TupleType et && et.elements.size() == ctx.exprs.size()) {
+            expectedElems = et.elements;
+        }
+        for (int i = 0; i < ctx.exprs.size(); i++) {
+            Type t = expectedElems != null ? check(ctx.exprs.get(i), expectedElems.get(i)) : infer(ctx.exprs.get(i));
+            elemTypes.add(t);
+        }
+        return new TupleType(elemTypes);
+    }
+
+    @Override
+    public Type visitDotTuple(stellaParser.DotTupleContext ctx) {
+        Type t = infer(ctx.expr_);
+        if (!(t instanceof TupleType tt)) {
+            throw new RuntimeException("ERROR_NOT_A_TUPLE: " + t);
+        }
+        int idx = Integer.parseInt(ctx.index.getText()) - 1;
+        if (idx < 0 || idx >= tt.elements.size()) {
+            throw new RuntimeException("ERROR_TUPLE_INDEX_OUT_OF_BOUNDS: index " + (idx+1) + " for " + tt);
+        }
+        return tt.elements.get(idx);
+    }
+
+    @Override
+    public Type visitRecord(stellaParser.RecordContext ctx) {
+        LinkedHashMap<String, Type> fields = new LinkedHashMap<>();
+        for (stellaParser.BindingContext b : ctx.bindings) {
+            String label = b.name.getText();
+            Type expectedField = null;
+            if (expectedType instanceof RecordType rt) {
+                expectedField = rt.fields.get(label);
+            }
+            Type t = expectedField != null ? check(b.rhs, expectedField) : infer(b.rhs);
+            fields.put(label, t);
+        }
+        return new RecordType(fields);
+    }
+
+    @Override
+    public Type visitDotRecord(stellaParser.DotRecordContext ctx) {
+        Type t = infer(ctx.expr_);
+        if (!(t instanceof RecordType rt)) {
+            throw new RuntimeException("ERROR_NOT_A_RECORD: " + t);
+        }
+        String label = ctx.label.getText();
+        if (!rt.fields.containsKey(label)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_FIELD_ACCESS: field " + label + " not in " + rt);
+        }
+        return rt.fields.get(label);
+    }
+
+    @Override
+    public Type visitLet(stellaParser.LetContext ctx) {
+        Map<String, Type> saved = new HashMap<>(context);
+        for (stellaParser.PatternBindingContext pb : ctx.patternBindings) {
+            Type rhsType = infer(pb.rhs);
+            bindLetPattern(pb.pat, rhsType);
+        }
+        Type result = visit(ctx.body);
+        context.clear();
+        context.putAll(saved);
+        return result;
+    }
+
+    @Override
+    public Type visitLetRec(stellaParser.LetRecContext ctx) {
+        Map<String, Type> saved = new HashMap<>(context);
+        for (stellaParser.PatternBindingContext pb : ctx.patternBindings) {
+            Type rhsType = infer(pb.rhs);
+            bindLetPattern(pb.pat, rhsType);
+        }
+        Type result = visit(ctx.body);
+        context.clear();
+        context.putAll(saved);
+        return result;
+    }
+
+    private void bindLetPattern(stellaParser.PatternContext pat, Type type) {
+        if (pat instanceof stellaParser.PatternVarContext pv) {
+            context.put(pv.name.getText(), type);
+        } else if (pat instanceof stellaParser.PatternTupleContext pt) {
+            if (!(type instanceof TupleType tt) || tt.elements.size() != pt.patterns.size()) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: tuple pattern mismatch");
+            }
+            for (int i = 0; i < pt.patterns.size(); i++) {
+                bindLetPattern(pt.patterns.get(i), tt.elements.get(i));
+            }
+        } else if (pat instanceof stellaParser.PatternRecordContext pr) {
+            if (!(type instanceof RecordType rt)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: record pattern on non-record");
+            }
+            for (stellaParser.LabelledPatternContext lp : pr.patterns) {
+                String label = lp.label.getText();
+                if (!rt.fields.containsKey(label)) {
+                    throw new RuntimeException("ERROR_UNEXPECTED_FIELD: " + label);
+                }
+                bindLetPattern(lp.pattern_, rt.fields.get(label));
+            }
+        } else if (pat instanceof stellaParser.ParenthesisedPatternContext pp) {
+            bindLetPattern(pp.pattern_, type);
+        } else {
+            throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: unsupported let pattern");
+        }
     }
 
     @Override
