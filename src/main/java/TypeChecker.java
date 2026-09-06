@@ -56,6 +56,11 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     }
 
     @Override
+    public Type visitTypeList(stellaParser.TypeListContext ctx) {
+        return new ListType(visit(ctx.type_));
+    }
+
+    @Override
     public Type visitTypeSum(stellaParser.TypeSumContext ctx) {
         return new SumType(visit(ctx.left), visit(ctx.right));
     }
@@ -189,6 +194,9 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
                 if (!isSubtype(f2.params.get(i), f1.params.get(i))) return false; // contravariant
             }
             return isSubtype(f1.ret, f2.ret);
+        }
+        if (sub instanceof ListType l1 && sup instanceof ListType l2) {
+            return isSubtype(l1.elementType, l2.elementType);
         }
         if (sub instanceof SumType s1 && sup instanceof SumType s2) {
             return isSubtype(s1.left, s2.left) && isSubtype(s1.right, s2.right);
@@ -557,6 +565,64 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         } else {
             throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: unsupported let pattern");
         }
+    }
+
+    @Override
+    public Type visitList(stellaParser.ListContext ctx) {
+        if (ctx.exprs.isEmpty()) {
+            if (!(expectedType instanceof ListType)) {
+                throw new RuntimeException("ERROR_AMBIGUOUS_LIST: empty list without expected type");
+            }
+            return expectedType;
+        }
+        Type elemType = infer(ctx.exprs.get(0));
+        for (int i = 1; i < ctx.exprs.size(); i++) {
+            Type t = check(ctx.exprs.get(i), elemType);
+            if (!t.equals(elemType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: list elements have different types");
+            }
+        }
+        return new ListType(elemType);
+    }
+
+    @Override
+    public Type visitConsList(stellaParser.ConsListContext ctx) {
+        Type headType = infer(ctx.head);
+        Type tailType = infer(ctx.tail);
+        if (!(tailType instanceof ListType lt)) {
+            throw new RuntimeException("ERROR_NOT_A_LIST: tail of cons must be a list, got " + tailType);
+        }
+        if (!headType.equals(lt.elementType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: cons head type " + headType + " doesn't match list element type " + lt.elementType);
+        }
+        return new ListType(headType);
+    }
+
+    @Override
+    public Type visitHead(stellaParser.HeadContext ctx) {
+        Type t = infer(ctx.list);
+        if (!(t instanceof ListType lt)) {
+            throw new RuntimeException("ERROR_NOT_A_LIST: List::head expects a list, got " + t);
+        }
+        return lt.elementType;
+    }
+
+    @Override
+    public Type visitTail(stellaParser.TailContext ctx) {
+        Type t = infer(ctx.list);
+        if (!(t instanceof ListType)) {
+            throw new RuntimeException("ERROR_NOT_A_LIST: List::tail expects a list, got " + t);
+        }
+        return t;
+    }
+
+    @Override
+    public Type visitIsEmpty(stellaParser.IsEmptyContext ctx) {
+        Type t = infer(ctx.list);
+        if (!(t instanceof ListType)) {
+            throw new RuntimeException("ERROR_NOT_A_LIST: List::isempty expects a list, got " + t);
+        }
+        return new BoolType();
     }
 
     @Override
