@@ -61,6 +61,11 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     }
 
     @Override
+    public Type visitTypeRef(stellaParser.TypeRefContext ctx) {
+        return new RefType(visit(ctx.type_));
+    }
+
+    @Override
     public Type visitTypeSum(stellaParser.TypeSumContext ctx) {
         return new SumType(visit(ctx.left), visit(ctx.right));
     }
@@ -819,6 +824,52 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: nullary variant label " + label + " given a value");
         }
         return vt;
+    }
+
+    @Override
+    public Type visitFix(stellaParser.FixContext ctx) {
+        Type t = infer(ctx.expr_);
+        if (!(t instanceof FunctionType ft)) {
+            throw new RuntimeException("ERROR_NOT_A_FUNCTION: fix expects a function, got " + t);
+        }
+        if (ft.params.size() != 1 || !ft.params.get(0).equals(ft.ret)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: fix argument must have type T -> T");
+        }
+        return ft.params.get(0);
+    }
+
+    @Override
+    public Type visitRef(stellaParser.RefContext ctx) {
+        return new RefType(infer(ctx.expr_));
+    }
+
+    @Override
+    public Type visitDeref(stellaParser.DerefContext ctx) {
+        Type refExpected = expectedType != null ? new RefType(expectedType) : null;
+        Type t = refExpected != null ? check(ctx.expr_, refExpected) : infer(ctx.expr_);
+        if (!(t instanceof RefType rt)) {
+            throw new RuntimeException("ERROR_NOT_A_REFERENCE: deref expects a reference, got " + t);
+        }
+        return rt.inner;
+    }
+
+    @Override
+    public Type visitConstMemory(stellaParser.ConstMemoryContext ctx) {
+        if (expectedType instanceof RefType) return expectedType;
+        throw new RuntimeException("ERROR_AMBIGUOUS_MEMORY_TYPE: need expected type for memory address");
+    }
+
+    @Override
+    public Type visitAssign(stellaParser.AssignContext ctx) {
+        Type lhsType = infer(ctx.lhs);
+        if (!(lhsType instanceof RefType rt)) {
+            throw new RuntimeException("ERROR_NOT_A_REFERENCE: assignment target must be a reference, got " + lhsType);
+        }
+        Type rhsType = check(ctx.rhs, rt.inner);
+        if (!isSubtype(rhsType, rt.inner)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: assignment value type mismatch: expected " + rt.inner + " got " + rhsType);
+        }
+        return new UnitType();
     }
 
     @Override
