@@ -56,6 +56,22 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     }
 
     @Override
+    public Type visitTypeSum(stellaParser.TypeSumContext ctx) {
+        return new SumType(visit(ctx.left), visit(ctx.right));
+    }
+
+    @Override
+    public Type visitTypeVariant(stellaParser.TypeVariantContext ctx) {
+        LinkedHashMap<String, Type> fields = new LinkedHashMap<>();
+        for (stellaParser.VariantFieldTypeContext vf : ctx.fieldTypes) {
+            String label = vf.label.getText();
+            Type t = vf.type_ != null ? visit(vf.type_) : null;
+            fields.put(label, t);
+        }
+        return new VariantType(fields);
+    }
+
+    @Override
     public Type visitTypeTop(stellaParser.TypeTopContext ctx) { return new TopType(); }
 
     @Override
@@ -173,6 +189,17 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
                 if (!isSubtype(f2.params.get(i), f1.params.get(i))) return false; // contravariant
             }
             return isSubtype(f1.ret, f2.ret);
+        }
+        if (sub instanceof SumType s1 && sup instanceof SumType s2) {
+            return isSubtype(s1.left, s2.left) && isSubtype(s1.right, s2.right);
+        }
+        if (sub instanceof VariantType v1 && sup instanceof VariantType v2) {
+            for (Map.Entry<String, Type> e : v1.fields.entrySet()) {
+                if (!v2.fields.containsKey(e.getKey())) return false;
+                if (e.getValue() != null && v2.fields.get(e.getKey()) != null &&
+                    !isSubtype(e.getValue(), v2.fields.get(e.getKey()))) return false;
+            }
+            return true;
         }
         return false;
     }
@@ -530,6 +557,202 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         } else {
             throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: unsupported let pattern");
         }
+    }
+
+    @Override
+    public Type visitInl(stellaParser.InlContext ctx) {
+        if (!(expectedType instanceof SumType st)) {
+            throw new RuntimeException("ERROR_AMBIGUOUS_SUM_TYPE: inl without expected sum type");
+        }
+        Type inner = check(ctx.expr_, st.left);
+        if (!isSubtype(inner, st.left)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inl inner type mismatch");
+        }
+        return st;
+    }
+
+    @Override
+    public Type visitInr(stellaParser.InrContext ctx) {
+        if (!(expectedType instanceof SumType st)) {
+            throw new RuntimeException("ERROR_AMBIGUOUS_SUM_TYPE: inr without expected sum type");
+        }
+        Type inner = check(ctx.expr_, st.right);
+        if (!isSubtype(inner, st.right)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inr inner type mismatch");
+        }
+        return st;
+    }
+
+    @Override
+    public Type visitMatch(stellaParser.MatchContext ctx) {
+        Type discType = infer(ctx.expr_);
+        if (ctx.cases.isEmpty()) {
+            throw new RuntimeException("ERROR_ILLEGAL_EMPTY_MATCHING");
+        }
+        Type resultType = null;
+        Set<String> coveredLabels = new HashSet<>();
+        boolean coverInl = false, coverInr = false;
+        for (stellaParser.MatchCaseContext mc : ctx.cases) {
+            Map<String, Type> saved = new HashMap<>(context);
+            coverPattern(mc.pattern_, discType, coveredLabels);
+            if (mc.pattern_ instanceof stellaParser.PatternInlContext) coverInl = true;
+            if (mc.pattern_ instanceof stellaParser.PatternInrContext) coverInr = true;
+            Type caseType = visit(mc.expr_);
+            context.clear();
+            context.putAll(saved);
+            if (resultType == null) {
+                resultType = caseType;
+            } else if (!isSubtype(caseType, resultType) && !isSubtype(resultType, caseType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: match arms have different types: " + resultType + " vs " + caseType);
+            }
+        }
+        checkExhaustiveness(discType, coveredLabels, coverInl, coverInr, ctx.cases);
+        return resultType;
+    }
+
+    private void coverPattern(stellaParser.PatternContext pat, Type discType, Set<String> coveredLabels) {
+        if (pat instanceof stellaParser.PatternVarContext pv) {
+            context.put(pv.name.getText(), discType);
+        } else if (pat instanceof stellaParser.PatternInlContext pi) {
+            if (!(discType instanceof SumType st)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: inl pattern on non-sum type " + discType);
+            }
+            coverPattern(pi.pattern_, st.left, coveredLabels);
+        } else if (pat instanceof stellaParser.PatternInrContext pi) {
+            if (!(discType instanceof SumType st)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: inr pattern on non-sum type " + discType);
+            }
+            coverPattern(pi.pattern_, st.right, coveredLabels);
+        } else if (pat instanceof stellaParser.PatternVariantContext pv) {
+            if (!(discType instanceof VariantType vt)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: variant pattern on non-variant type " + discType);
+            }
+            String label = pv.label.getText();
+            if (!vt.fields.containsKey(label)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_VARIANT_LABEL: " + label + " not in " + vt);
+            }
+            coveredLabels.add(label);
+            Type fieldType = vt.fields.get(label);
+            if (pv.pattern_ == null && fieldType != null) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: nullary pattern on non-nullary variant label " + label);
+            } else if (pv.pattern_ != null && fieldType == null) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: non-nullary pattern on nullary variant label " + label);
+            } else if (pv.pattern_ != null) {
+                coverPattern(pv.pattern_, fieldType, coveredLabels);
+            }
+        } else if (pat instanceof stellaParser.PatternTupleContext pt) {
+            if (!(discType instanceof TupleType tt) || tt.elements.size() != pt.patterns.size()) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: tuple pattern mismatch");
+            }
+            for (int i = 0; i < pt.patterns.size(); i++) {
+                coverPattern(pt.patterns.get(i), tt.elements.get(i), coveredLabels);
+            }
+        } else if (pat instanceof stellaParser.PatternRecordContext pr) {
+            if (!(discType instanceof RecordType rt)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: record pattern on non-record");
+            }
+            Set<String> specifiedFields = new HashSet<>();
+            for (stellaParser.LabelledPatternContext lp : pr.patterns) {
+                String label = lp.label.getText();
+                if (!rt.fields.containsKey(label)) {
+                    throw new RuntimeException("ERROR_UNEXPECTED_FIELD: " + label);
+                }
+                specifiedFields.add(label);
+                coverPattern(lp.pattern_, rt.fields.get(label), coveredLabels);
+            }
+            for (String field : rt.fields.keySet()) {
+                if (!specifiedFields.contains(field)) {
+                    throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: missing field " + field + " in record pattern");
+                }
+            }
+        } else if (pat instanceof stellaParser.PatternSuccContext ps) {
+            if (!(discType instanceof NatType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: succ pattern on non-Nat type");
+            }
+            coverPattern(ps.pattern_, discType, coveredLabels);
+        } else if (pat instanceof stellaParser.PatternTrueContext) {
+            if (!(discType instanceof BoolType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: true pattern on non-Bool");
+            }
+            coveredLabels.add("true");
+        } else if (pat instanceof stellaParser.PatternFalseContext) {
+            if (!(discType instanceof BoolType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: false pattern on non-Bool");
+            }
+            coveredLabels.add("false");
+        } else if (pat instanceof stellaParser.PatternIntContext) {
+            if (!(discType instanceof NatType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: int pattern on non-Nat");
+            }
+        } else if (pat instanceof stellaParser.PatternUnitContext) {
+            if (!(discType instanceof UnitType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: unit pattern on non-Unit");
+            }
+        } else if (pat instanceof stellaParser.ParenthesisedPatternContext pp) {
+            coverPattern(pp.pattern_, discType, coveredLabels);
+        } else if (pat instanceof stellaParser.PatternAsTupleContext at) {
+            if (!(discType instanceof TupleType tt) || tt.elements.size() != 2) {
+                throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: pair pattern mismatch");
+            }
+            coverPattern(at.p1, tt.elements.get(0), coveredLabels);
+            coverPattern(at.p2, tt.elements.get(1), coveredLabels);
+        } else {
+            throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: unsupported pattern " + pat.getClass().getSimpleName());
+        }
+    }
+
+    private void checkExhaustiveness(Type discType, Set<String> coveredLabels, boolean coverInl, boolean coverInr, List<stellaParser.MatchCaseContext> cases) {
+        if (discType instanceof SumType) {
+            if (!coverInl || !coverInr) {
+                boolean hasWild = cases.stream().anyMatch(c -> c.pattern_ instanceof stellaParser.PatternVarContext);
+                if (!hasWild) {
+                    throw new RuntimeException("ERROR_NONEXHAUSTIVE_MATCH_PATTERNS: sum type needs both inl and inr cases");
+                }
+            }
+        } else if (discType instanceof VariantType vt) {
+            boolean hasWild = cases.stream().anyMatch(c -> c.pattern_ instanceof stellaParser.PatternVarContext);
+            if (!hasWild) {
+                for (String label : vt.fields.keySet()) {
+                    if (!coveredLabels.contains(label)) {
+                        throw new RuntimeException("ERROR_NONEXHAUSTIVE_MATCH_PATTERNS: variant label not covered: " + label);
+                    }
+                }
+            }
+        } else if (discType instanceof BoolType) {
+            boolean hasWild = cases.stream().anyMatch(c -> c.pattern_ instanceof stellaParser.PatternVarContext);
+            if (!hasWild && (!coveredLabels.contains("true") || !coveredLabels.contains("false"))) {
+                throw new RuntimeException("ERROR_NONEXHAUSTIVE_MATCH_PATTERNS: Bool needs true and false cases");
+            }
+        } else if (discType instanceof NatType) {
+            boolean hasWild = cases.stream().anyMatch(c -> c.pattern_ instanceof stellaParser.PatternVarContext);
+            boolean hasSucc = cases.stream().anyMatch(c -> c.pattern_ instanceof stellaParser.PatternSuccContext);
+            if (!hasWild && !hasSucc) {
+                throw new RuntimeException("ERROR_NONEXHAUSTIVE_MATCH_PATTERNS: Nat needs a succ or wildcard pattern");
+            }
+        }
+    }
+
+    @Override
+    public Type visitVariant(stellaParser.VariantContext ctx) {
+        if (!(expectedType instanceof VariantType vt)) {
+            throw new RuntimeException("ERROR_AMBIGUOUS_VARIANT_TYPE: variant without expected type");
+        }
+        String label = ctx.label.getText();
+        if (!vt.fields.containsKey(label)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_VARIANT_LABEL: " + label + " not in " + vt);
+        }
+        Type fieldType = vt.fields.get(label);
+        if (ctx.rhs != null && fieldType != null) {
+            Type rhsType = check(ctx.rhs, fieldType);
+            if (!rhsType.equals(fieldType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: variant field type mismatch");
+            }
+        } else if (ctx.rhs == null && fieldType != null) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: variant label " + label + " expects a value");
+        } else if (ctx.rhs != null && fieldType == null) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: nullary variant label " + label + " given a value");
+        }
+        return vt;
     }
 
     @Override
