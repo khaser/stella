@@ -6,6 +6,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     private final Map<String, Type> typeAliases = new HashMap<>();
     private final Set<String> extensions = new HashSet<>();
     private Type expectedType = null;
+    private Type exceptionType = null;
 
     // --- Type visitor methods ---
 
@@ -112,10 +113,18 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
                 typeAliases.put(ta.name.getText(), visit(ta.atype));
             }
         }
+        LinkedHashMap<String, Type> openExceptionVariants = new LinkedHashMap<>();
         for (stellaParser.DeclContext decl : ctx.decls) {
-            if (!(decl instanceof stellaParser.DeclTypeAliasContext)) {
+            if (decl instanceof stellaParser.DeclExceptionTypeContext et) {
+                exceptionType = visit(et.exceptionType);
+            } else if (decl instanceof stellaParser.DeclExceptionVariantContext ev) {
+                openExceptionVariants.put(ev.name.getText(), visit(ev.variantType));
+            } else if (!(decl instanceof stellaParser.DeclTypeAliasContext)) {
                 collectSignature(decl);
             }
+        }
+        if (!openExceptionVariants.isEmpty()) {
+            exceptionType = new VariantType(openExceptionVariants);
         }
         if (!context.containsKey("main")) {
             throw new RuntimeException("ERROR_MISSING_MAIN");
@@ -881,6 +890,45 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     public Type visitSequence(stellaParser.SequenceContext ctx) {
         infer(ctx.expr1);
         return visit(ctx.expr2);
+    }
+
+    @Override
+    public Type visitThrow(stellaParser.ThrowContext ctx) {
+        if (exceptionType == null) {
+            throw new RuntimeException("ERROR_EXCEPTION_TYPE_NOT_DECLARED");
+        }
+        Type t = check(ctx.expr_, exceptionType);
+        if (!isSubtype(t, exceptionType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: throw value must be exception type");
+        }
+        return expectedType;
+    }
+
+    @Override
+    public Type visitTryCatch(stellaParser.TryCatchContext ctx) {
+        Type tryType = visit(ctx.tryExpr);
+        if (exceptionType == null) {
+            throw new RuntimeException("ERROR_EXCEPTION_TYPE_NOT_DECLARED");
+        }
+        Map<String, Type> saved = new HashMap<>(context);
+        coverPattern(ctx.pat, exceptionType, new HashSet<>());
+        Type fallbackType = check(ctx.fallbackExpr, tryType);
+        context.clear();
+        context.putAll(saved);
+        if (!tryType.equals(fallbackType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-catch branches have different types");
+        }
+        return tryType;
+    }
+
+    @Override
+    public Type visitTryWith(stellaParser.TryWithContext ctx) {
+        Type tryType = visit(ctx.tryExpr);
+        Type fallbackType = check(ctx.fallbackExpr, tryType);
+        if (!tryType.equals(fallbackType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-with branches have different types");
+        }
+        return tryType;
     }
 
     @Override
