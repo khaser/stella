@@ -396,15 +396,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitApplication(stellaParser.ApplicationContext ctx) {
-        Type funType;
-        if (isAbstractionExpr(ctx.fun) && expectedType != null) {
-            List<Type> inferredArgTypes = new ArrayList<>();
-            for (var arg : ctx.args) inferredArgTypes.add(infer(arg));
-            FunctionType expFt = new FunctionType(inferredArgTypes, expectedType);
-            funType = check(ctx.fun, expFt);
-        } else {
-            funType = infer(ctx.fun);
-        }
+        Type funType = infer(ctx.fun);
         if (!(funType instanceof FunctionType ft)) {
             throw new RuntimeException("ERROR_NOT_A_FUNCTION: " + funType);
         }
@@ -584,15 +576,23 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitList(stellaParser.ListContext ctx) {
         if (ctx.exprs.isEmpty()) {
-            if (!(expectedType instanceof ListType)) {
-                throw new RuntimeException("ERROR_AMBIGUOUS_LIST: empty list without expected type");
+            if (expectedType instanceof ListType) return expectedType;
+            if (extensions.contains("#ambiguous-type-as-bottom")) return new ListType(new BotType());
+            throw new RuntimeException("ERROR_AMBIGUOUS_LIST: empty list without expected type");
+        }
+        if (expectedType instanceof ListType lt) {
+            for (stellaParser.ExprContext e : ctx.exprs) {
+                Type t = check(e, lt.elementType);
+                if (!isSubtype(t, lt.elementType)) {
+                    throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: list element type mismatch");
+                }
             }
             return expectedType;
         }
         Type elemType = infer(ctx.exprs.get(0));
         for (int i = 1; i < ctx.exprs.size(); i++) {
             Type t = check(ctx.exprs.get(i), elemType);
-            if (!t.equals(elemType)) {
+            if (!isSubtype(t, elemType)) {
                 throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: list elements have different types");
             }
         }
@@ -641,26 +641,32 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitInl(stellaParser.InlContext ctx) {
-        if (!(expectedType instanceof SumType st)) {
-            throw new RuntimeException("ERROR_AMBIGUOUS_SUM_TYPE: inl without expected sum type");
+        if (expectedType instanceof SumType st) {
+            Type inner = check(ctx.expr_, st.left);
+            if (!isSubtype(inner, st.left)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inl inner type mismatch");
+            }
+            return st;
         }
-        Type inner = check(ctx.expr_, st.left);
-        if (!isSubtype(inner, st.left)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inl inner type mismatch");
+        if (extensions.contains("#ambiguous-type-as-bottom")) {
+            return new SumType(infer(ctx.expr_), new BotType());
         }
-        return st;
+        throw new RuntimeException("ERROR_AMBIGUOUS_SUM_TYPE: inl without expected sum type");
     }
 
     @Override
     public Type visitInr(stellaParser.InrContext ctx) {
-        if (!(expectedType instanceof SumType st)) {
-            throw new RuntimeException("ERROR_AMBIGUOUS_SUM_TYPE: inr without expected sum type");
+        if (expectedType instanceof SumType st) {
+            Type inner = check(ctx.expr_, st.right);
+            if (!isSubtype(inner, st.right)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inr inner type mismatch");
+            }
+            return st;
         }
-        Type inner = check(ctx.expr_, st.right);
-        if (!isSubtype(inner, st.right)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inr inner type mismatch");
+        if (extensions.contains("#ambiguous-type-as-bottom")) {
+            return new SumType(new BotType(), infer(ctx.expr_));
         }
-        return st;
+        throw new RuntimeException("ERROR_AMBIGUOUS_SUM_TYPE: inr without expected sum type");
     }
 
     @Override
@@ -680,9 +686,14 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             Type caseType = visit(mc.expr_);
             context.clear();
             context.putAll(saved);
-            if (resultType == null) {
+            if (expectedType != null) {
+                if (caseType != null && !isSubtype(caseType, expectedType)) {
+                    throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: match arm type " + caseType + " is not subtype of expected " + expectedType);
+                }
+                if (resultType == null) resultType = caseType;
+            } else if (resultType == null) {
                 resultType = caseType;
-            } else if (!isSubtype(caseType, resultType) && !isSubtype(resultType, caseType)) {
+            } else if (caseType != null && !isSubtype(caseType, resultType) && !isSubtype(resultType, caseType)) {
                 throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: match arms have different types: " + resultType + " vs " + caseType);
             }
         }
@@ -814,25 +825,31 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitVariant(stellaParser.VariantContext ctx) {
-        if (!(expectedType instanceof VariantType vt)) {
-            throw new RuntimeException("ERROR_AMBIGUOUS_VARIANT_TYPE: variant without expected type");
-        }
         String label = ctx.label.getText();
-        if (!vt.fields.containsKey(label)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_VARIANT_LABEL: " + label + " not in " + vt);
-        }
-        Type fieldType = vt.fields.get(label);
-        if (ctx.rhs != null && fieldType != null) {
-            Type rhsType = check(ctx.rhs, fieldType);
-            if (!rhsType.equals(fieldType)) {
-                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: variant field type mismatch");
+        if (expectedType instanceof VariantType vt) {
+            if (!vt.fields.containsKey(label)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_VARIANT_LABEL: " + label + " not in " + vt);
             }
-        } else if (ctx.rhs == null && fieldType != null) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: variant label " + label + " expects a value");
-        } else if (ctx.rhs != null && fieldType == null) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: nullary variant label " + label + " given a value");
+            Type fieldType = vt.fields.get(label);
+            if (ctx.rhs != null && fieldType != null) {
+                Type rhsType = check(ctx.rhs, fieldType);
+                if (!isSubtype(rhsType, fieldType)) {
+                    throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: variant field type mismatch");
+                }
+            } else if (ctx.rhs == null && fieldType != null) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: variant label " + label + " expects a value");
+            } else if (ctx.rhs != null && fieldType == null) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: nullary variant label " + label + " given a value");
+            }
+            return vt;
         }
-        return vt;
+        if (extensions.contains("#structural-subtyping")) {
+            LinkedHashMap<String, Type> fields = new LinkedHashMap<>();
+            Type rhsType = ctx.rhs != null ? infer(ctx.rhs) : null;
+            fields.put(label, rhsType);
+            return new VariantType(fields);
+        }
+        throw new RuntimeException("ERROR_AMBIGUOUS_VARIANT_TYPE: variant without expected type");
     }
 
     @Override
@@ -849,6 +866,11 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitRef(stellaParser.RefContext ctx) {
+        if (expectedType instanceof RefType rt) {
+            Type inner = check(ctx.expr_, rt.inner);
+            if (isSubtype(inner, rt.inner)) return rt;
+            return new RefType(inner);
+        }
         return new RefType(infer(ctx.expr_));
     }
 
@@ -883,7 +905,9 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitPanic(stellaParser.PanicContext ctx) {
-        return expectedType;
+        if (expectedType != null) return expectedType;
+        if (extensions.contains("#ambiguous-type-as-bottom")) return new BotType();
+        throw new RuntimeException("ERROR_AMBIGUOUS_PANIC_TYPE");
     }
 
     @Override
@@ -901,7 +925,9 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         if (!isSubtype(t, exceptionType)) {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: throw value must be exception type");
         }
-        return expectedType;
+        if (expectedType != null) return expectedType;
+        if (extensions.contains("#ambiguous-type-as-bottom")) return new BotType();
+        throw new RuntimeException("ERROR_AMBIGUOUS_THROW_TYPE");
     }
 
     @Override
