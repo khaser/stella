@@ -781,6 +781,11 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             }
         } else if (pat instanceof stellaParser.ParenthesisedPatternContext pp) {
             coverPattern(pp.pattern_, discType, coveredLabels);
+        } else if (pat instanceof stellaParser.PatternCastAsContext pc) {
+            Type castType = visit(pc.type_);
+            coverPattern(pc.pattern_, castType, coveredLabels);
+        } else if (pat instanceof stellaParser.PatternAscContext pa) {
+            coverPattern(pa.pattern_, visit(pa.type_), coveredLabels);
         } else if (pat instanceof stellaParser.PatternAsTupleContext at) {
             if (!(discType instanceof TupleType tt) || tt.elements.size() != 2) {
                 throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: pair pattern mismatch");
@@ -965,5 +970,31 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: ascription type mismatch: expected " + ascType + " got " + exprType);
         }
         return ascType;
+    }
+
+    @Override
+    public Type visitTryCastAs(stellaParser.TryCastAsContext ctx) {
+        infer(ctx.tryExpr);
+        Type castType = visit(ctx.type_);
+        Map<String, Type> saved = new HashMap<>(context);
+        coverPattern(ctx.pattern_, castType, new HashSet<>());
+        Type bodyType = visit(ctx.expr_);
+        context.clear();
+        context.putAll(saved);
+        Type fallbackType = visit(ctx.fallbackExpr);
+        if (expectedType != null) {
+            if (bodyType != null && !isSubtype(bodyType, expectedType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-cast-as body type " + bodyType + " not subtype of " + expectedType);
+            }
+            if (fallbackType != null && !isSubtype(fallbackType, expectedType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-cast-as fallback type " + fallbackType + " not subtype of " + expectedType);
+            }
+            return expectedType;
+        }
+        if (bodyType != null && fallbackType != null
+                && !isSubtype(fallbackType, bodyType) && !isSubtype(bodyType, fallbackType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-cast-as branches have different types: " + bodyType + " vs " + fallbackType);
+        }
+        return bodyType != null ? bodyType : fallbackType;
     }
 }
