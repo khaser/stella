@@ -8,7 +8,42 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     private Type expectedType = null;
     private Type exceptionType = null;
 
+    // --- TypeVar helpers ---
+
+    private Type resolve(Type t) {
+        while (t instanceof TypeVar tv && tv.ref != null) t = tv.ref;
+        return t;
+    }
+
+    private boolean occursIn(TypeVar v, Type t) {
+        t = resolve(t);
+        if (t == v) return true;
+        if (t instanceof FunctionType ft) {
+            for (Type p : ft.params) if (occursIn(v, p)) return true;
+            return occursIn(v, ft.ret);
+        }
+        if (t instanceof ListType lt) return occursIn(v, lt.elementType);
+        if (t instanceof RefType rt) return occursIn(v, rt.inner);
+        if (t instanceof SumType st) return occursIn(v, st.left) || occursIn(v, st.right);
+        if (t instanceof TupleType tt) {
+            for (Type e : tt.elements) if (occursIn(v, e)) return true;
+            return false;
+        }
+        if (t instanceof RecordType rt) {
+            for (Type fv : rt.fields.values()) if (fv != null && occursIn(v, fv)) return true;
+            return false;
+        }
+        if (t instanceof VariantType vt) {
+            for (Type fv : vt.fields.values()) if (fv != null && occursIn(v, fv)) return true;
+            return false;
+        }
+        return false;
+    }
+
     // --- Type visitor methods ---
+
+    @Override
+    public Type visitTypeAuto(stellaParser.TypeAutoContext ctx) { return new TypeVar(); }
 
     @Override
     public Type visitTypeNat(stellaParser.TypeNatContext ctx) { return new NatType(); }
@@ -160,8 +195,14 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     private void checkFunBody(stellaParser.DeclFunContext fun) {
         Map<String, Type> saved = new HashMap<>(context);
-        for (stellaParser.ParamDeclContext p : fun.paramDecls) {
-            context.put(p.name.getText(), visit(p.paramType));
+        Type storedType = context.get(fun.name.getText());
+        FunctionType storedFt = storedType instanceof FunctionType ft ? ft : null;
+        for (int i = 0; i < fun.paramDecls.size(); i++) {
+            stellaParser.ParamDeclContext p = fun.paramDecls.get(i);
+            Type paramType = (storedFt != null && i < storedFt.params.size())
+                    ? storedFt.params.get(i)
+                    : visit(p.paramType);
+            context.put(p.name.getText(), paramType);
         }
         for (stellaParser.DeclContext local : fun.localDecls) {
             collectSignature(local);
@@ -171,7 +212,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
                 checkFunBody(nested);
             }
         }
-        Type expectedReturn = visit(fun.returnType);
+        Type expectedReturn = storedFt != null ? storedFt.ret : visit(fun.returnType);
         Type bodyType = check(fun.returnExpr, expectedReturn);
         if (!isSubtype(bodyType, expectedReturn)) {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: expected " + expectedReturn + " got " + bodyType + " in " + fun.name.getText());
@@ -183,9 +224,22 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     // --- Subtyping ---
 
     private boolean isSubtype(Type sub, Type sup) {
+        sub = resolve(sub);
+        sup = resolve(sup);
         if (sub == null || sup == null) return true;
         if (sub instanceof BotType) return true;
         if (sup instanceof TopType) return true;
+        if (sub == sup) return true;
+        if (sub instanceof TypeVar tv) {
+            if (occursIn(tv, sup)) throw new RuntimeException("ERROR_OCCURS_CHECK_INFINITE_TYPE");
+            tv.ref = sup;
+            return true;
+        }
+        if (sup instanceof TypeVar tv) {
+            if (occursIn(tv, sub)) throw new RuntimeException("ERROR_OCCURS_CHECK_INFINITE_TYPE");
+            tv.ref = sub;
+            return true;
+        }
         if (sub.equals(sup)) return true;
         if (sub instanceof RecordType r1 && sup instanceof RecordType r2) {
             if (!extensions.contains("#structural-subtyping") && !r1.fields.keySet().equals(r2.fields.keySet())) return false;
@@ -283,8 +337,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitSucc(stellaParser.SuccContext ctx) {
         Type t = infer(ctx.n);
-        if (!(t instanceof NatType)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: succ expects Nat, got " + t);
+        if (!isSubtype(t, new NatType())) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: succ expects Nat, got " + resolve(t));
         }
         return new NatType();
     }
@@ -292,8 +346,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitPred(stellaParser.PredContext ctx) {
         Type t = infer(ctx.n);
-        if (!(t instanceof NatType)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: pred expects Nat, got " + t);
+        if (!isSubtype(t, new NatType())) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: pred expects Nat, got " + resolve(t));
         }
         return new NatType();
     }
@@ -301,8 +355,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitIsZero(stellaParser.IsZeroContext ctx) {
         Type t = infer(ctx.n);
-        if (!(t instanceof NatType)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: iszero expects Nat, got " + t);
+        if (!isSubtype(t, new NatType())) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: iszero expects Nat, got " + resolve(t));
         }
         return new BoolType();
     }
@@ -310,8 +364,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitLogicNot(stellaParser.LogicNotContext ctx) {
         Type t = infer(ctx.expr_);
-        if (!(t instanceof BoolType)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: not expects Bool, got " + t);
+        if (!isSubtype(t, new BoolType())) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: not expects Bool, got " + resolve(t));
         }
         return new BoolType();
     }
@@ -377,8 +431,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitIf(stellaParser.IfContext ctx) {
         Type cond = check(ctx.condition, new BoolType());
-        if (!(cond instanceof BoolType)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: if condition must be Bool, got " + cond);
+        if (!isSubtype(cond, new BoolType())) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: if condition must be Bool, got " + resolve(cond));
         }
         Type thenType = visit(ctx.thenExpr);
         if (thenType == null) {
@@ -396,7 +450,16 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitApplication(stellaParser.ApplicationContext ctx) {
-        Type funType = infer(ctx.fun);
+        Type funType = resolve(infer(ctx.fun));
+        if (funType instanceof TypeVar tv) {
+            List<Type> freshParams = new ArrayList<>();
+            for (int i = 0; i < ctx.args.size(); i++) freshParams.add(new TypeVar());
+            TypeVar freshRet = new TypeVar();
+            FunctionType freshFt = new FunctionType(freshParams, freshRet);
+            if (occursIn(tv, freshFt)) throw new RuntimeException("ERROR_OCCURS_CHECK_INFINITE_TYPE");
+            tv.ref = freshFt;
+            funType = freshFt;
+        }
         if (!(funType instanceof FunctionType ft)) {
             throw new RuntimeException("ERROR_NOT_A_FUNCTION: " + funType);
         }
@@ -404,12 +467,13 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             throw new RuntimeException("ERROR_INCORRECT_NUMBER_OF_ARGUMENTS: expected " + ft.params.size() + " got " + ctx.args.size());
         }
         for (int i = 0; i < ctx.args.size(); i++) {
-            Type argType = check(ctx.args.get(i), ft.params.get(i));
-            if (!isSubtype(argType, ft.params.get(i))) {
-                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_PARAMETER: expected " + ft.params.get(i) + " got " + argType);
+            Type paramType = resolve(ft.params.get(i));
+            Type argType = check(ctx.args.get(i), paramType);
+            if (!isSubtype(argType, paramType)) {
+                throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_PARAMETER: expected " + paramType + " got " + resolve(argType));
             }
         }
-        return ft.ret;
+        return resolve(ft.ret);
     }
 
     @Override
@@ -417,7 +481,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         Map<String, Type> saved = new HashMap<>(context);
         List<Type> paramTypes = new ArrayList<>();
         Type expectedBodyType = null;
-        if (expectedType instanceof FunctionType expFt && expFt.params.size() == ctx.paramDecls.size()) {
+        Type resolvedExpected = resolve(expectedType);
+        if (resolvedExpected instanceof FunctionType expFt && expFt.params.size() == ctx.paramDecls.size()) {
             expectedBodyType = expFt.ret;
         }
         for (stellaParser.ParamDeclContext p : ctx.paramDecls) {
@@ -480,7 +545,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitDotTuple(stellaParser.DotTupleContext ctx) {
-        Type t = infer(ctx.expr_);
+        Type t = resolve(infer(ctx.expr_));
         if (!(t instanceof TupleType tt)) {
             throw new RuntimeException("ERROR_NOT_A_TUPLE: " + t);
         }
@@ -508,7 +573,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitDotRecord(stellaParser.DotRecordContext ctx) {
-        Type t = infer(ctx.expr_);
+        Type t = resolve(infer(ctx.expr_));
         if (!(t instanceof RecordType rt)) {
             throw new RuntimeException("ERROR_NOT_A_RECORD: " + t);
         }
@@ -602,19 +667,19 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitConsList(stellaParser.ConsListContext ctx) {
         Type headType = infer(ctx.head);
-        Type tailType = infer(ctx.tail);
+        Type tailType = resolve(infer(ctx.tail));
         if (!(tailType instanceof ListType lt)) {
             throw new RuntimeException("ERROR_NOT_A_LIST: tail of cons must be a list, got " + tailType);
         }
-        if (!headType.equals(lt.elementType)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: cons head type " + headType + " doesn't match list element type " + lt.elementType);
+        if (!isSubtype(headType, lt.elementType) || !isSubtype(lt.elementType, headType)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: cons head type " + resolve(headType) + " doesn't match list element type " + resolve(lt.elementType));
         }
-        return new ListType(headType);
+        return new ListType(resolve(headType));
     }
 
     @Override
     public Type visitHead(stellaParser.HeadContext ctx) {
-        Type t = infer(ctx.list);
+        Type t = resolve(infer(ctx.list));
         if (!(t instanceof ListType lt)) {
             throw new RuntimeException("ERROR_NOT_A_LIST: List::head expects a list, got " + t);
         }
@@ -623,7 +688,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitTail(stellaParser.TailContext ctx) {
-        Type t = infer(ctx.list);
+        Type t = resolve(infer(ctx.list));
         if (!(t instanceof ListType)) {
             throw new RuntimeException("ERROR_NOT_A_LIST: List::tail expects a list, got " + t);
         }
@@ -632,7 +697,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitIsEmpty(stellaParser.IsEmptyContext ctx) {
-        Type t = infer(ctx.list);
+        Type t = resolve(infer(ctx.list));
         if (!(t instanceof ListType)) {
             throw new RuntimeException("ERROR_NOT_A_LIST: List::isempty expects a list, got " + t);
         }
@@ -641,7 +706,13 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitInl(stellaParser.InlContext ctx) {
-        if (expectedType instanceof SumType st) {
+        Type resolvedExp = resolve(expectedType);
+        if (resolvedExp instanceof TypeVar tv) {
+            TypeVar leftTv = new TypeVar(), rightTv = new TypeVar();
+            tv.ref = new SumType(leftTv, rightTv);
+            resolvedExp = tv.ref;
+        }
+        if (resolvedExp instanceof SumType st) {
             Type inner = check(ctx.expr_, st.left);
             if (!isSubtype(inner, st.left)) {
                 throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inl inner type mismatch");
@@ -656,7 +727,13 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitInr(stellaParser.InrContext ctx) {
-        if (expectedType instanceof SumType st) {
+        Type resolvedExp = resolve(expectedType);
+        if (resolvedExp instanceof TypeVar tv) {
+            TypeVar leftTv = new TypeVar(), rightTv = new TypeVar();
+            tv.ref = new SumType(leftTv, rightTv);
+            resolvedExp = tv.ref;
+        }
+        if (resolvedExp instanceof SumType st) {
             Type inner = check(ctx.expr_, st.right);
             if (!isSubtype(inner, st.right)) {
                 throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: inr inner type mismatch");
@@ -671,7 +748,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitMatch(stellaParser.MatchContext ctx) {
-        Type discType = infer(ctx.expr_);
+        Type discType = resolve(infer(ctx.expr_));
         if (ctx.cases.isEmpty()) {
             throw new RuntimeException("ERROR_ILLEGAL_EMPTY_MATCHING");
         }
@@ -697,19 +774,30 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
                 throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: match arms have different types: " + resultType + " vs " + caseType);
             }
         }
-        checkExhaustiveness(discType, coveredLabels, coverInl, coverInr, ctx.cases);
+        checkExhaustiveness(resolve(discType), coveredLabels, coverInl, coverInr, ctx.cases);
         return resultType;
     }
 
     private void coverPattern(stellaParser.PatternContext pat, Type discType, Set<String> coveredLabels) {
+        discType = resolve(discType);
         if (pat instanceof stellaParser.PatternVarContext pv) {
             context.put(pv.name.getText(), discType);
         } else if (pat instanceof stellaParser.PatternInlContext pi) {
+            if (discType instanceof TypeVar tv) {
+                TypeVar leftTv = new TypeVar(), rightTv = new TypeVar();
+                tv.ref = new SumType(leftTv, rightTv);
+                discType = tv.ref;
+            }
             if (!(discType instanceof SumType st)) {
                 throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: inl pattern on non-sum type " + discType);
             }
             coverPattern(pi.pattern_, st.left, coveredLabels);
         } else if (pat instanceof stellaParser.PatternInrContext pi) {
+            if (discType instanceof TypeVar tv) {
+                TypeVar leftTv = new TypeVar(), rightTv = new TypeVar();
+                tv.ref = new SumType(leftTv, rightTv);
+                discType = tv.ref;
+            }
             if (!(discType instanceof SumType st)) {
                 throw new RuntimeException("ERROR_UNEXPECTED_PATTERN_FOR_TYPE: inr pattern on non-sum type " + discType);
             }
@@ -859,22 +947,33 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitFix(stellaParser.FixContext ctx) {
-        Type t = infer(ctx.expr_);
+        Type t = resolve(infer(ctx.expr_));
         if (!(t instanceof FunctionType ft)) {
             throw new RuntimeException("ERROR_NOT_A_FUNCTION: fix expects a function, got " + t);
         }
-        if (ft.params.size() != 1 || !ft.params.get(0).equals(ft.ret)) {
+        Type param0 = resolve(ft.params.size() == 1 ? ft.params.get(0) : null);
+        Type ret = resolve(ft.ret);
+        if (ft.params.size() != 1 || !isSubtype(param0, ret) || !isSubtype(ret, param0)) {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: fix argument must have type T -> T");
         }
-        return ft.params.get(0);
+        return param0;
     }
 
     @Override
     public Type visitRef(stellaParser.RefContext ctx) {
-        if (expectedType instanceof RefType rt) {
+        Type resolvedExpected = resolve(expectedType);
+        if (resolvedExpected instanceof RefType rt) {
             Type inner = check(ctx.expr_, rt.inner);
             if (isSubtype(inner, rt.inner)) return rt;
             return new RefType(inner);
+        }
+        if (resolvedExpected instanceof TypeVar tv) {
+            TypeVar inner = new TypeVar();
+            RefType newRef = new RefType(inner);
+            tv.ref = newRef;
+            Type inferredInner = check(ctx.expr_, inner);
+            isSubtype(inferredInner, inner);
+            return newRef;
         }
         return new RefType(infer(ctx.expr_));
     }
@@ -882,7 +981,12 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     @Override
     public Type visitDeref(stellaParser.DerefContext ctx) {
         Type refExpected = expectedType != null ? new RefType(expectedType) : null;
-        Type t = refExpected != null ? check(ctx.expr_, refExpected) : infer(ctx.expr_);
+        Type t = resolve(refExpected != null ? check(ctx.expr_, refExpected) : infer(ctx.expr_));
+        if (t instanceof TypeVar tv) {
+            TypeVar inner = new TypeVar();
+            tv.ref = new RefType(inner);
+            return inner;
+        }
         if (!(t instanceof RefType rt)) {
             throw new RuntimeException("ERROR_NOT_A_REFERENCE: deref expects a reference, got " + t);
         }
@@ -891,19 +995,32 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitConstMemory(stellaParser.ConstMemoryContext ctx) {
-        if (expectedType instanceof RefType) return expectedType;
+        Type resolvedExpected = resolve(expectedType);
+        if (resolvedExpected instanceof RefType) return resolvedExpected;
+        if (resolvedExpected instanceof TypeVar tv) {
+            TypeVar inner = new TypeVar();
+            RefType newRef = new RefType(inner);
+            tv.ref = newRef;
+            return newRef;
+        }
         throw new RuntimeException("ERROR_AMBIGUOUS_MEMORY_TYPE: need expected type for memory address");
     }
 
     @Override
     public Type visitAssign(stellaParser.AssignContext ctx) {
-        Type lhsType = infer(ctx.lhs);
+        Type lhsType = resolve(infer(ctx.lhs));
+        if (lhsType instanceof TypeVar tv) {
+            TypeVar inner = new TypeVar();
+            RefType newRef = new RefType(inner);
+            tv.ref = newRef;
+            lhsType = newRef;
+        }
         if (!(lhsType instanceof RefType rt)) {
             throw new RuntimeException("ERROR_NOT_A_REFERENCE: assignment target must be a reference, got " + lhsType);
         }
         Type rhsType = check(ctx.rhs, rt.inner);
         if (!isSubtype(rhsType, rt.inner)) {
-            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: assignment value type mismatch: expected " + rt.inner + " got " + rhsType);
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: assignment value type mismatch: expected " + rt.inner + " got " + resolve(rhsType));
         }
         return new UnitType();
     }
@@ -946,7 +1063,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         Type fallbackType = check(ctx.fallbackExpr, tryType);
         context.clear();
         context.putAll(saved);
-        if (!tryType.equals(fallbackType)) {
+        if (!isSubtype(tryType, fallbackType) && !isSubtype(fallbackType, tryType)) {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-catch branches have different types");
         }
         return tryType;
@@ -956,7 +1073,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     public Type visitTryWith(stellaParser.TryWithContext ctx) {
         Type tryType = visit(ctx.tryExpr);
         Type fallbackType = check(ctx.fallbackExpr, tryType);
-        if (!tryType.equals(fallbackType)) {
+        if (!isSubtype(tryType, fallbackType) && !isSubtype(fallbackType, tryType)) {
             throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: try-with branches have different types");
         }
         return tryType;
