@@ -37,6 +37,7 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             for (Type fv : vt.fields.values()) if (fv != null && occursIn(v, fv)) return true;
             return false;
         }
+        if (t instanceof UniversalType ut) return occursIn(v, ut.body);
         return false;
     }
 
@@ -44,6 +45,24 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
 
     @Override
     public Type visitTypeAuto(stellaParser.TypeAutoContext ctx) { return new TypeVar(); }
+
+    @Override
+    public Type visitTypeForAll(stellaParser.TypeForAllContext ctx) {
+        Map<String, Type> savedAliases = new HashMap<>(typeAliases);
+        List<TypeParamType> params = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (var t : ctx.types) {
+            String name = t.getText();
+            TypeParamType tp = new TypeParamType(name);
+            params.add(tp);
+            names.add(name);
+            typeAliases.put(name, tp);
+        }
+        Type body = visit(ctx.type_);
+        typeAliases.clear();
+        typeAliases.putAll(savedAliases);
+        return new UniversalType(params, names, body);
+    }
 
     @Override
     public Type visitTypeNat(stellaParser.TypeNatContext ctx) { return new NatType(); }
@@ -171,6 +190,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         for (stellaParser.DeclContext decl : ctx.decls) {
             if (decl instanceof stellaParser.DeclFunContext fun) {
                 checkFunBody(fun);
+            } else if (decl instanceof stellaParser.DeclFunGenericContext gfun) {
+                checkFunGenericBody(gfun);
             }
         }
         return null;
@@ -182,7 +203,60 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             Type returnType = visit(fun.returnType);
             Type funcType = buildFuncType(fun.paramDecls, returnType);
             context.put(name, funcType);
+        } else if (decl instanceof stellaParser.DeclFunGenericContext gfun) {
+            String name = gfun.name.getText();
+            Map<String, Type> savedAliases = new HashMap<>(typeAliases);
+            List<TypeParamType> typeParams = new ArrayList<>();
+            List<String> paramNames = new ArrayList<>();
+            for (var g : gfun.generics) {
+                TypeParamType tp = new TypeParamType(g.getText());
+                typeParams.add(tp);
+                paramNames.add(g.getText());
+                typeAliases.put(g.getText(), tp);
+            }
+            Type returnType = gfun.returnType != null ? visit(gfun.returnType) : new UnitType();
+            Type funcType = buildFuncType(gfun.paramDecls, returnType);
+            typeAliases.clear();
+            typeAliases.putAll(savedAliases);
+            context.put(name, new UniversalType(typeParams, paramNames, funcType));
         }
+    }
+
+    private void checkFunGenericBody(stellaParser.DeclFunGenericContext fun) {
+        Map<String, Type> savedContext = new HashMap<>(context);
+        Map<String, Type> savedAliases = new HashMap<>(typeAliases);
+        UniversalType ut = context.get(fun.name.getText()) instanceof UniversalType u ? u : null;
+        if (ut != null) {
+            for (int i = 0; i < fun.generics.size() && i < ut.typeParams.size(); i++) {
+                typeAliases.put(fun.generics.get(i).getText(), ut.typeParams.get(i));
+            }
+        }
+        FunctionType funcType = (ut != null && ut.body instanceof FunctionType ft) ? ft : null;
+        // Bind parameters
+        for (int i = 0; i < fun.paramDecls.size(); i++) {
+            stellaParser.ParamDeclContext p = fun.paramDecls.get(i);
+            Type paramType = (funcType != null && i < funcType.params.size())
+                    ? funcType.params.get(i)
+                    : visit(p.paramType);
+            context.put(p.name.getText(), paramType);
+        }
+        // Nested functions
+        for (stellaParser.DeclContext local : fun.localDecls) collectSignature(local);
+        for (stellaParser.DeclContext local : fun.localDecls) {
+            if (local instanceof stellaParser.DeclFunContext nested) checkFunBody(nested);
+            else if (local instanceof stellaParser.DeclFunGenericContext nested) checkFunGenericBody(nested);
+        }
+        // Typecheck body
+        Type expectedReturn = funcType != null ? funcType.ret
+                : (fun.returnType != null ? visit(fun.returnType) : new UnitType());
+        Type bodyType = check(fun.returnExpr, expectedReturn);
+        if (!isSubtype(bodyType, expectedReturn)) {
+            throw new RuntimeException("ERROR_UNEXPECTED_TYPE_FOR_EXPRESSION: expected " + expectedReturn + " got " + bodyType + " in " + fun.name.getText());
+        }
+        context.clear();
+        context.putAll(savedContext);
+        typeAliases.clear();
+        typeAliases.putAll(savedAliases);
     }
 
     private Type buildFuncType(List<stellaParser.ParamDeclContext> params, Type ret) {
@@ -312,6 +386,41 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     }
 
     // --- Expression visitors ---
+
+    @Override
+    public Type visitTypeAbstraction(stellaParser.TypeAbstractionContext ctx) {
+        Map<String, Type> savedAliases = new HashMap<>(typeAliases);
+        List<TypeParamType> params = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (var t : ctx.generics) {
+            String name = t.getText();
+            TypeParamType tp = new TypeParamType(name);
+            params.add(tp);
+            names.add(name);
+            typeAliases.put(name, tp);
+        }
+        Type bodyType = infer(ctx.expr_);
+        typeAliases.clear();
+        typeAliases.putAll(savedAliases);
+        return new UniversalType(params, names, bodyType);
+    }
+
+    @Override
+    public Type visitTypeApplication(stellaParser.TypeApplicationContext ctx) {
+        Type funType = resolve(infer(ctx.fun));
+        if (!(funType instanceof UniversalType ut)) {
+            throw new RuntimeException("ERROR_NOT_A_GENERIC_FUNCTION: " + funType);
+        }
+        if (ctx.types.size() != ut.typeParams.size()) {
+            throw new RuntimeException("ERROR_WRONG_NUMBER_OF_TYPE_ARGUMENTS: expected " + ut.typeParams.size() + " got " + ctx.types.size());
+        }
+        Type result = ut.body;
+        for (int i = 0; i < ctx.types.size(); i++) {
+            Type argType = visit(ctx.types.get(i));
+            result = UniversalType.substitute(result, ut.typeParams.get(i), argType);
+        }
+        return result;
+    }
 
     @Override
     public Type visitVar(stellaParser.VarContext ctx) {
