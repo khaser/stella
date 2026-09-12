@@ -37,4 +37,15 @@ sourceSets {
 
 tasks.test {
     useJUnitPlatform()
+    exclude("**/TestSuiteV2Test*")
+}
+
+tasks.register<Test>("testSuiteV2") {
+    description = "Runs test_suite_v2: well-typed (no exception) and ill-typed (exception with matching error code)"
+    group = "verification"
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching("TestSuiteV2Test")
+    }
+    dependsOn(tasks.testClasses)
 }
