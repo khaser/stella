@@ -2,6 +2,7 @@ import org.junit.jupiter.params.*;
 import org.junit.jupiter.params.provider.*;
 import static org.junit.jupiter.api.Assertions.*;
 import java.io.*;
+import java.nio.file.Paths;
 
 class CoreTest {
     @ParameterizedTest(name = "Core well-typed {0}")
@@ -102,7 +103,7 @@ class CoreTest {
             "tests/core/ill-typed/unexpected-type-for-parameter/added-test-1.stella",
             "tests/core/ill-typed/unexpected-type-for-parameter/argument-type-mismatch-2.stella",
             "tests/core/ill-typed/unexpected-type-for-parameter/argument-type-mismatch-3.stella",
-            "tests/core/ill-typed/unexpected-type-for-parameter/bad-nat-1.stella",
+            "tests/core/ill-typed/unexpected-type-for-expression/bad-nat-1.stella",
             "tests/core/ill-typed/unexpected-type-for-parameter/if-funcs.stella",
             "tests/core/ill-typed/unexpected-type-for-parameter/invalid-nat.stella",
             "tests/core/ill-typed/unexpected-type-for-parameter/invalid-not_.stella",
@@ -110,9 +111,15 @@ class CoreTest {
     })
     void testIllTyped(String filepath) throws Exception {
         final InputStream original = System.in;
+        String dirName = Paths.get(filepath).getParent().getFileName().toString();
+        String expectedError = "ERROR_" + dirName.toUpperCase().replace('-', '_');
         try (FileInputStream fips = new FileInputStream(filepath)) {
             System.setIn(fips);
-            assertThrows(Exception.class, () -> Main.main(new String[0]));
+            Exception ex = assertThrows(Exception.class, () -> Main.main(new String[0]));
+            assertTrue(
+                ex.getMessage() != null && ex.getMessage().contains(expectedError),
+                "Expected error containing '" + expectedError + "' but got: '" + ex.getMessage() + "'"
+            );
         } finally {
             System.setIn(original);
         }
