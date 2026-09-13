@@ -18,6 +18,11 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
     }
 
     @Override
+    public Type visitTypeParens(stellaParser.TypeParensContext ctx) {
+        return visit(ctx.type_);
+    }
+
+    @Override
     public Type visitProgram(stellaParser.ProgramContext ctx) {
         // First pass: collect function signatures
         for (stellaParser.DeclContext decl : ctx.decls) {
@@ -169,6 +174,34 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
         context.clear();
         context.putAll(saved);
         return new FunctionType(paramType, bodyType);
+    }
+
+    @Override
+    public Type visitNatRec(stellaParser.NatRecContext ctx) {
+        Type nType = visit(ctx.n);
+        if (!(nType instanceof NatType)) {
+            throw new RuntimeException("Nat::rec first argument must be Nat");
+        }
+        Type initialType = visit(ctx.initial);
+        Type stepType = visit(ctx.step);
+        if (!(stepType instanceof FunctionType stepFun)) {
+            throw new RuntimeException("Nat::rec step must be a function");
+        }
+        if (!(stepFun.param instanceof NatType)) {
+            throw new RuntimeException("Nat::rec step must take Nat as first argument");
+        }
+        if (!(stepFun.ret instanceof FunctionType innerFun)) {
+            throw new RuntimeException("Nat::rec step must return a function");
+        }
+        if (!innerFun.param.equals(initialType) || !innerFun.ret.equals(initialType)) {
+            throw new RuntimeException("Nat::rec step type mismatch with initial value type");
+        }
+        return initialType;
+    }
+
+    @Override
+    public Type visitParenthesisedExpr(stellaParser.ParenthesisedExprContext ctx) {
+        return visit(ctx.expr_);
     }
 
 }
