@@ -14,23 +14,18 @@ class CoreTest {
             "tests/core/well-typed/bool-to-nat.stella",
             "tests/core/well-typed/cubes.stella",
             "tests/core/well-typed/double-application.stella",
-            "tests/core/well-typed/extra-tests/multiparameter-functions/test-1.stella",
-            "tests/core/well-typed/extra-tests/multiparameter-functions/test-2.stella",
-            "tests/core/well-typed/extra-tests/natural-literals/test-1.stella",
-            "tests/core/well-typed/extra-tests/natural-literals/test-2.stella",
-            "tests/core/well-typed/extra-tests/nested-function-declarations/test-1.stella",
-            "tests/core/well-typed/extra-tests/nested-function-declarations/test-2.stella",
-            "tests/core/well-typed/extra-tests/nested-function-declarations/test-3.stella",
-            "tests/core/well-typed/extra-tests/nullary-functions/test-1.stella",
-            "tests/core/well-typed/extra-tests/nullary-functions/test-2.stella",
+            "tests/core/well-typed/factorial.stella",
             "tests/core/well-typed/good-if-2.stella",
+            "tests/core/well-typed/good-if.stella",
             "tests/core/well-typed/good-succ-1.stella",
             "tests/core/well-typed/good-succ-2.stella",
+            "tests/core/well-typed/higher-order-1.stella",
             "tests/core/well-typed/higher-order-2.stella",
             "tests/core/well-typed/if-funcs.stella",
             "tests/core/well-typed/increment-triple.stella",
             "tests/core/well-typed/increment_twice.stella",
             "tests/core/well-typed/inner-if.stella",
+            "tests/core/well-typed/logical-operators.stella",
             "tests/core/well-typed/many-if.stella",
             "tests/core/well-typed/my-good-if.stella",
             "tests/core/well-typed/my-good-succ.stella",
@@ -41,6 +36,8 @@ class CoreTest {
             "tests/core/well-typed/nested.stella",
             "tests/core/well-typed/shadowed-variable-2.stella",
             "tests/core/well-typed/simple-if.stella",
+            "tests/core/well-typed/simple-succ.stella",
+            "tests/core/well-typed/simple-types.stella",
             "tests/core/well-typed/squares.stella",
             "tests/core/well-typed/succ-with-func.stella",
     })
@@ -56,41 +53,6 @@ class CoreTest {
 
     @ParameterizedTest(name = "Core ill-typed {0}")
     @ValueSource(strings = {
-            "tests/core/ill-typed/extra-tests/incorrect_arity_of_main/my-test-2.stella",
-            "tests/core/ill-typed/extra-tests/incorrect_arity_of_main/my-test.stella",
-            "tests/core/ill-typed/extra-tests/incorrect_number_of_arguments/test-1.stella",
-            "tests/core/ill-typed/extra-tests/incorrect_number_of_arguments/test-2.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-add-1.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-cmp-1.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-cmp-2.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-cmp-3.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-cmp-4.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-cmp-5.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-cmp-6.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-logic-and-1.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-logic-or-1.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/bad-multiply-1.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-1.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-2.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-3.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-4.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-5.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-6.stella",
-            "tests/core/ill-typed/extra-tests/multiparameter-functions/test-7.stella",
-            "tests/core/ill-typed/extra-tests/natural-literals/bad-factorial-1.stella",
-            "tests/core/ill-typed/extra-tests/natural-literals/bad-factorial-2.stella",
-            "tests/core/ill-typed/extra-tests/nested-function-declarations/test-1.stella",
-            "tests/core/ill-typed/extra-tests/nested-function-declarations/test-2.stella",
-            "tests/core/ill-typed/extra-tests/nested-function-declarations/test-3.stella",
-            "tests/core/ill-typed/extra-tests/nullary-functions/test-1.stella",
-            "tests/core/ill-typed/extra-tests/nullary-functions/test-2.stella",
-            "tests/core/ill-typed/extra-tests/nullary-functions/test-3.stella",
-            "tests/core/ill-typed/extra-tests/nullary-functions/test-4.stella",
-            "tests/core/ill-typed/extra-tests/nullary-functions/test-5.stella",
-            "tests/core/ill-typed/extra-tests/unexpected_number_of_parameters_in_lambda/test-1.stella",
-            "tests/core/ill-typed/extra-tests/unexpected_number_of_parameters_in_lambda/test-2.stella",
-            "tests/core/ill-typed/extra-tests/unexpected_number_of_parameters_in_lambda/test-3.stella",
-            "tests/core/ill-typed/extra-tests/unexpected_number_of_parameters_in_lambda/test-4.stella",
             "tests/core/ill-typed/missing_main/missing-main-1.stella",
             "tests/core/ill-typed/missing_main/missing-main-2.stella",
             "tests/core/ill-typed/not-a-function/applying-non-function-1.stella",
@@ -147,9 +109,12 @@ class CoreTest {
             "tests/core/ill-typed/unexpected-type-for-parameter/unexpected-type-for-parameter-1.stella",
     })
     void testIllTyped(String filepath) throws Exception {
-        final FileInputStream fips = new FileInputStream(filepath);
-        System.setIn(fips);
-        assertThrows(Exception.class, () -> Main.main(new String[0]));
+        final InputStream original = System.in;
+        try (FileInputStream fips = new FileInputStream(filepath)) {
+            System.setIn(fips);
+            assertThrows(Exception.class, () -> Main.main(new String[0]));
+        } finally {
+            System.setIn(original);
+        }
     }
 }
-
