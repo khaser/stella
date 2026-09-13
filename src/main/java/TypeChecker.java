@@ -38,6 +38,8 @@ public class TypeChecker extends stellaParserBaseVisitor<Type> {
             if (decl instanceof stellaParser.DeclFunContext fun) {
                 currentFunction = fun.name.getText();
                 context.clear();
+                // Make all functions visible (for calls)
+                context.putAll(functions);
                 // Bind parameter
                 String paramName = fun.paramDecls.get(0).name.getText();
                 Type paramType = visit(fun.paramDecls.get(0).paramType);

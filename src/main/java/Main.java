@@ -5,7 +5,7 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 
 final class Main {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         try {
             InputStream input;
 
@@ -28,7 +28,7 @@ final class Main {
 
             if (parser.getNumberOfSyntaxErrors() > 0) {
                 System.err.println("\nParsing completed with " + parser.getNumberOfSyntaxErrors() + " error(s)");
-                System.exit(1);
+                throw new Exception("Parsing errors recognized");
             } else {
                 System.out.println("\n=== Parsing successful! ===");
                 System.out.println("\n=== Typechecking ===");
@@ -38,14 +38,14 @@ final class Main {
                     System.out.println("Typechecking successful!");
                 } catch (Exception e) {
                     System.err.println("Type error: " + e.getMessage());
-                    System.exit(1);
+                    throw e;
                 }
             }
 
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
-            System.exit(1);
+            throw e;
         }
     }
 }
